@@ -1,0 +1,293 @@
+export BASE_DIR=/app/cross/
+export LOG_DIR=$BASE_DIR/log
+export SRC_DIR=$BASE_DIR/src
+export BUILD_DIR=$BASE_DIR/build
+export INSTALL_DIR=$BASE_DIR/x64
+export SYSROOT_DIR=$INSTALL_DIR/sysroot
+
+export TARGET_MACH=x86_64-fsf-linux
+export LINUX_ARCH=x86_64
+export BUILD_MACH=$(gcc -dumpmachine)
+
+export binutils_version=binutils-2.27
+export kernel_version=linux-4.14.59
+export gcc_version=gcc-6.4.0
+export musl_version=musl-1.1.19
+export glibc_version=glibc-2.25
+
+
+# https://gmplib.org gmp-6.1.2
+# http://www.mpfr.org mpfr-4.0.1.tar.gz
+# http://www.multiprecision.org mpc-1.1.0
+# http://isl.gforge.inria.fr isl-0.18
+
+export BINUTILS_SRC=$SRC_DIR/$binutils_version
+export KERNEL_SRC=$SRC_DIR/$kernel_version
+export GCC_SRC=$SRC_DIR/$gcc_version
+export GLIBC_SRC=$SRC_DIR/$glibc_version
+export MUSL_SRC=$SRC_DIR/$musl_version
+
+wrap_cmd() {
+    stage=$1; shift
+    LOGFILE="$LOG_DIR/$stage.log"
+    rm -rf "$LOGFILE"
+    echo "begin $stage"
+    for cmd in "$@"
+    do
+	echo "begin $cmd"
+	eval "$cmd >> $LOGFILE 2>&1"
+	[ $? -ne 0 ] && echo "error" && exit 1
+	echo "end $cmd"
+    done
+    echo "end $stage"
+}
+
+rm -rf $BUILD_DIR
+mkdir -p $BUILD_DIR
+
+mkdir -p $SRC_DIR
+
+rm -rf $LOG_DIR
+mkdir -p $LOG_DIR
+
+#wrap_cmd \
+    #  "00.download_packages" \
+    #  "cd $SRC_DIR" \
+    #  "wget https://mirrors4.tuna.tsinghua.edu.cn/gnu/binutils/$binutils_version.tar.bz2" \
+    #  "wget https://mirrors4.tuna.tsinghua.edu.cn/gnu/gcc/$gcc_version/$gcc_version.tar.gz" \
+    #  "wget https://mirrors4.tuna.tsinghua.edu.cn/gnu/glibc/$glibc_version.tar.bz2" \
+    #  "wget https://mirrors4.tuna.tsinghua.edu.cn/kernel/v4.x/$kernel_version.tar.gz" 
+
+function build_01_binutils () {
+    wrap_cmd \
+	"01-01.binutils_extract" \
+	"rm -rf $BINUTILS_SRC" \
+	"tar jxf $BINUTILS_SRC.tar.bz2 -C $SRC_DIR/" \
+	"mkdir -p $BUILD_DIR/binutils"
+
+    wrap_cmd \
+	"01-02.binutils_configure" \
+	"cd $BUILD_DIR/binutils" \
+	"$BINUTILS_SRC/configure \
+--prefix=$INSTALL_DIR \
+--host=$BUILD_MACH \
+--target=$TARGET_MACH \
+--with-sysroot=$SYSROOT_DIR \
+--disable-werror"
+
+    wrap_cmd \
+	"01-03.binutils_build" \
+	"cd $BUILD_DIR/binutils" \
+	"make -j$(nproc)" "make install"
+}
+
+function build_02_linux_header () {
+    wrap_cmd \
+	"02-01.linux_extract" \
+	"rm -rf $KERNEL_SRC" \
+	"tar zxf $KERNEL_SRC.tar.gz -C $SRC_DIR/"
+
+    wrap_cmd \
+	"02-02.linux_header_install" \
+	"cd $KERNEL_SRC" \
+	"make mrproper" \
+	"make ARCH=$LINUX_ARCH INSTALL_HDR_PATH=$SYSROOT_DIR/usr headers_install"
+}
+
+function build_03_gcc_bootstrap() {
+    wrap_cmd \
+	"03-01.gcc_extract" \
+	"rm -rf $GCC_SRC" \
+	"rm -rf $BUILD_DIR/bootstrap-gcc" \
+	"tar zxf $GCC_SRC.tar.gz -C $SRC_DIR/" \
+	"sed -i -e '/k prot/agcc_cv_libc_provides_ssp=yes' $GCC_SRC/gcc/configure" \
+	"cd $GCC_SRC" \
+	"ln -sf $SRC_DIR/gmp gmp" \
+	"ln -sf $SRC_DIR/mpfr mpfr" \
+	"ln -sf $SRC_DIR/mpc mpc" \
+	"ln -sf $SRC_DIR/isl isl" \
+	"ln -sf $SRC_DIR/cloog cloog" \
+	"mkdir $BUILD_DIR/bootstrap-gcc"
+
+    wrap_cmd \
+	"03-02.gcc_configure" \
+	"cd $BUILD_DIR/bootstrap-gcc" \
+	"$GCC_SRC/configure \
+--prefix=$INSTALL_DIR \
+--build=$BUILD_MACH \
+--host=$BUILD_MACH \
+--target=$TARGET_MACH \
+--without-headers \
+--enable-languages='c' \
+--enable-__cxa_atexit \
+--with-gnu-ld \
+--with-gnu-as \
+--disable-libmudflap \
+--disable-threads \
+--disable-libssp \
+--disable-libgomp \
+--disable-nls \
+--disable-multilib \
+--disable-decimal-float \
+--disable-libatomic \
+--disable-shared"
+
+    wrap_cmd \
+	"03-03.gcc_build" \
+	"mkdir -p $SYSROOT_DIR/lib" \
+	"mkdir -p $SYSROOT_DIR/usr/lib" \
+	"ln -sf lib $SYSROOT_DIR/lib64" \
+	"ln -sf lib $SYSROOT_DIR/usr/lib64" \
+	"cd $BUILD_DIR/bootstrap-gcc" \
+	"make -j$(nproc) all-gcc" \
+	"make -j$(nproc) all-target-libgcc" \
+	"make install-gcc" \
+	"make install-target-libgcc"
+}
+
+
+function build_04_libc_header() {
+    wrap_cmd \
+	"04-01.glibc_extract" \
+	"rm -rf $GLIBC_SRC" \
+	"rm -rf $BUILD_DIR/libc" \
+	"tar jxf $GLIBC_SRC.tar.bz2 -C $SRC_DIR/" \
+	"mkdir -pv $BUILD_DIR/libc"
+
+    wrap_cmd \
+	"04-02.glibc_configure" \
+	"cd $BUILD_DIR/libc" \
+	"echo 'libc_cv_forced_unwind=yes' > config.cache" \
+	"echo 'libc_cv_c_cleanup=yes' >> config.cache" \
+	"export PATH=$INSTALL_DIR/bin:$PATH" \
+	"export CC=${TARGET_MACH}-gcc" \
+	"export LD=${TARGET_MACH}-ld" \
+	"export AS=${TARGET_MACH}-as" \
+	"$GLIBC_SRC/configure \
+--prefix=/usr \
+--build=$BUILD_MACH \
+--host=$TARGET_MACH \
+--with-headers=$SYSROOT_DIR/usr/include \
+--config-cache \
+--enable-kernel=4.0"
+    
+    wrap_cmd \
+	"04-03.glibc_build" \
+	"make -k install-headers cross_compiling=yes install_root=$SYSROOT_DIR"
+}
+
+function build_04_libc() {
+    wrap_cmd \
+	"04-01.glibc_extract" \
+	"rm -rf $GLIBC_SRC" \
+	"rm -rf $BUILD_DIR/libc" \
+	"tar zxf $GLIBC_SRC.tar.gz -C $SRC_DIR/" \
+	"mkdir -pv $BUILD_DIR/libc"
+
+    wrap_cmd \
+	"04-02.glibc_configure" \
+	"cd $BUILD_DIR/libc" \
+	"export PATH=$INSTALL_DIR/bin:$PATH" \
+	"export CC=${TARGET_MACH}-gcc" \
+	"export LD=${TARGET_MACH}-ld" \
+	"export AS=${TARGET_MACH}-as" \
+	"echo 'libc_cv_forced_unwind=yes' > config.cache" \
+	"echo 'libc_cv_c_cleanup=yes' >> config.cache" \
+	"$GLIBC_SRC/configure \
+--prefix=/usr \
+--build=$BUILD_MACH \
+--host=$TARGET_MACH \
+--with-headers=$SYSROOT_DIR/usr/include \
+--config-cache \
+--enable-kernel=4.0"
+
+    wrap_cmd \
+	"04-03.glibc_build" \
+	"make -j$(nproc)" \
+	"make DESTDIR=$SYSROOT_DIR install" \
+	"unset CC" "unset LD" "unset AS"
+}
+
+function build_05_gcc_01() {
+    wrap_cmd \
+	"06-01.gcc-final-01_extract" \
+	"rm -rf $BUILD_DIR/final-gcc-01" \
+	"mkdir -pv $BUILD_DIR/final-gcc-01" \
+	"rm -rf $GCC_SRC" \
+	"tar zxf $GCC_SRC.tar.gz -C $SRC_DIR/" \
+	"cd $GCC_SRC" \
+	"ln -sf $SRC_DIR/gmp gmp" \
+	"ln -sf $SRC_DIR/mpfr mpfr" \
+	"ln -sf $SRC_DIR/mpc mpc" \
+	"ln -sf $SRC_DIR/isl isl" \
+	"ln -sf $SRC_DIR/cloog cloog"
+
+    wrap_cmd \
+	"06-02.gcc-final-01_configure" \
+	"cd $BUILD_DIR/final-gcc-01" \
+	"echo $PATH" \
+	"echo 'libc_cv_forced_unwind=yes' > config.cache" \
+	"echo 'libc_cv_c_cleanup=yes' >> config.cache" \
+	"$GCC_SRC/configure \
+--prefix=$INSTALL_DIR \
+--build=$BUILD_MACH \
+--target=$TARGET_MACH \
+--with-sysroot=$SYSROOT_DIR \
+--enable-languages='c,c++' \
+--enable-c99 \
+--enable-long-long \
+--with-gnu-as \
+--with-gnu-ld \
+--disable-multilib \
+--disable-bootstrap\
+--disable-nls \
+--enable-threads=posix \
+--with-shared"
+
+    wrap_cmd \
+	"06-03.gcc-final-01_build" \
+	"make -j$(nproc) all-gcc all-target-libgcc" \
+	"make install-gcc install-target-libgcc"
+}
+
+function build_06_gcc_final_02() {
+    wrap_cmd \
+	"07-01.gcc-final-02_extract" \
+	"rm -rf $BUILD_DIR/final-gcc-02" \
+	"mkdir -pv $BUILD_DIR/final-gcc-02"
+
+    wrap_cmd \
+	"07-02.gcc-final-02_configure" \
+	"cd $BUILD_DIR/final-gcc-02" \
+	"echo 'libc_cv_forced_unwind=yes' > config.cache" \
+	"echo 'libc_cv_c_cleanup=yes' >> config.cache" \
+	"$GCC_SRC/configure \
+--prefix=$INSTALL_DIR \
+--build=$BUILD_MACH \
+--host=$BUILD_MACH \
+--target=$TARGET_MACH \
+--with-sysroot=$SYSROOT_DIR \
+--enable-languages='c,c++' \
+--enable-c99 \
+--enable-long-long \
+--with-gnu-as \
+--with-gnu-ld \
+--disable-multilib \
+--disable-libsanitizer \
+--disable-nls \
+--disable-libssp \
+--enable-threads=posix \
+--with-shared"
+
+    wrap_cmd \
+	"07-03.gcc-final-02_build" \
+	"make -j$(nproc)" \
+	"make install"
+}
+
+build_01_binutils
+build_02_linux_header
+build_03_gcc_bootstrap
+build_04_libc
+build_05_gcc_01
+build_06_gcc_final_02

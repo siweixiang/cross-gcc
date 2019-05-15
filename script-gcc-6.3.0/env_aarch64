@@ -1,0 +1,6 @@
+export PATH=/app/cross/aarch64/bin/:$PATH
+export LD=aarch64-fsf-linux-ld
+export AS=aarch64-fsf-linux-as
+export CC=aarch64-fsf-linux-gcc
+export RANLIB=aarch64-fsf-linux-ranlib
+export GCC_COLORS=auto
